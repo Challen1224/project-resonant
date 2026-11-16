@@ -449,7 +449,7 @@ fn build_text_sections(
     width: f32,
     height: f32,
     selected_browser_asset: f32,
-) -> [Section<'static>; 28] {
+) -> [Section<'static>; 29] {
     let (asset_name, asset_type, asset_description) = match selected_browser_asset {
         0.0 => (
             "Analog Synth",
@@ -556,7 +556,7 @@ fn build_text_sections(
             [0.84, 0.88, 0.96, 1.0],
         ),
         make_text_section(
-            "ASSET DETAILS",
+            "ASSET PREVIEW",
             (20.0, 456.0),
             (220.0, 22.0),
             17.0,
@@ -571,17 +571,24 @@ fn build_text_sections(
         ),
         make_text_section(
             asset_type,
-            (30.0, 528.0),
+            (30.0, 522.0),
             (210.0, 20.0),
             14.0,
             [0.52, 0.78, 0.91, 1.0],
         ),
         make_text_section(
             asset_description,
-            (30.0, 560.0),
-            (210.0, 44.0),
-            14.0,
+            (30.0, 550.0),
+            (210.0, 24.0),
+            12.0,
             [0.76, 0.78, 0.86, 1.0],
+        ),
+        make_text_section(
+            "PREVIEW SOON",
+            (77.0, 642.0),
+            (120.0, 18.0),
+            15.0,
+            [1.0, 1.0, 1.0, 1.0],
         ),
         make_text_section(
             "ARRANGE",
@@ -843,6 +850,47 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
             if y < 480.0 {
                 return vec4<f32>(panel_header_edge, 1.0);
             }
+
+            let point = vec2<f32>(x, y);
+
+            // Procedural waveform preview surface.
+            let waveform_card = rounded_box(
+                point,
+                vec2<f32>(130.0, 600.0),
+                vec2<f32>(108.0, 16.0),
+                8.0
+            );
+
+            if waveform_card <= 0.0 {
+                let wave_x = x - 24.0;
+                let phase = wave_x * 0.16;
+                let amplitude = 2.0
+                    + abs(sin(phase * 0.73) * cos(phase * 0.19)) * 9.0;
+                let bar_distance = abs(fract(wave_x / 5.0) - 0.5);
+
+                if bar_distance < 0.19 && abs(y - 600.0) < amplitude {
+                    return vec4<f32>(0.55, 0.39, 0.95, 1.0);
+                }
+
+                if abs(y - 600.0) < 0.7 {
+                    return vec4<f32>(0.22, 0.19, 0.34, 1.0);
+                }
+
+                return vec4<f32>(0.075, 0.070, 0.115, 1.0);
+            }
+
+            // Preview button surface.
+            let preview_button = rounded_box(
+                point,
+                vec2<f32>(130.0, 650.0),
+                vec2<f32>(88.0, 16.0),
+                8.0
+            );
+
+            if preview_button <= 0.0 {
+                return vec4<f32>(0.36, 0.23, 0.78, 1.0);
+            }
+
             return vec4<f32>(0.055, 0.060, 0.082, 1.0);
         }
 
