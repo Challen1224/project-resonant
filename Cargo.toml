@@ -3,7 +3,11 @@ resolver = "3"
 members = [
     "applications/resonant-studio",
     "crates/resonant-core",
+    "crates/resonant-audio",
 ]
+
+[workspace.dependencies]
+cpal = "0.18.2"
 
 [workspace.package]
 version = "0.1.0"
