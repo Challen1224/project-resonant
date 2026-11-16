@@ -9,6 +9,10 @@ repository.workspace = true
 
 [dependencies]
 resonant-core = { path = "../../crates/resonant-core" }
+winit.workspace = true
+wgpu.workspace = true
+wgpu_text.workspace = true
+pollster.workspace = true
 
 [lints]
 workspace = true

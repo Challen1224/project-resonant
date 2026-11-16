@@ -9,6 +9,10 @@ members = [
 [workspace.dependencies]
 cpal = "0.18.2"
 rtrb = "0.4.1"
+winit = "0.30.13"
+wgpu = "26.0.1"
+wgpu_text = "26.0.0"
+pollster = "0.4"
 
 [workspace.package]
 version = "0.1.0"
