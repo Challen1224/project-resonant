@@ -1,7 +1,9 @@
 //! Audio output device discovery and configuration inspection.
 
+use crate::command::{NoteCommand, NoteCommandReceiver};
 use crate::mixer::AudioMixer;
 use crate::oscillator::SineOscillator;
+use crate::voice_manager::AudioVoiceManager;
 use cpal::traits::StreamTrait;
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
@@ -275,6 +277,101 @@ impl AudioMixerOutput {
         stream
             .play()
             .map_err(|error| format!("Failed to start audio mixer output stream: {error}"))?;
+
+        Ok(Self { _stream: stream })
+    }
+}
+
+/// A running audio output stream controlled by real-time note commands.
+///
+/// The audio callback owns the voice manager and consumes commands from a
+/// bounded single-producer, single-consumer queue. The producer never needs
+/// to acquire a lock or wait for the audio callback.
+pub struct AudioCommandOutput {
+    _stream: Stream,
+}
+
+impl AudioCommandOutput {
+    /// Opens the default output device and starts a command-driven audio stream.
+    ///
+    /// The voice manager is initialized using the output device's actual
+    /// sample rate. Its voice storage is allocated before the callback starts.
+    ///
+    /// Commands are consumed at the beginning of each audio buffer. Invalid
+    /// Note On commands and commands exceeding voice capacity are discarded.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the queue output cannot be initialized, no default
+    /// output device exists, its configuration cannot be read, its sample
+    /// format is unsupported, or the stream cannot be built or started.
+    pub fn start(mut receiver: NoteCommandReceiver, max_voices: usize) -> Result<Self, String> {
+        let device = cpal::default_host()
+            .default_output_device()
+            .ok_or_else(|| "No default audio output device is available.".to_string())?;
+
+        let supported_config = device
+            .default_output_config()
+            .map_err(|error| format!("Failed to read output configuration: {error}"))?;
+
+        if supported_config.sample_format() != SampleFormat::F32 {
+            return Err(format!(
+                "Unsupported output sample format: {:?}. This prototype currently supports F32.",
+                supported_config.sample_format()
+            ));
+        }
+
+        let config: StreamConfig = supported_config.into();
+        let channels = usize::from(config.channels);
+
+        if channels == 0 {
+            return Err("The output device reported zero channels.".to_string());
+        }
+
+        // Standard audio sample rates are exactly representable as f32.
+        #[allow(clippy::cast_precision_loss)]
+        let sample_rate_hz = config.sample_rate as f32;
+
+        let mut manager = AudioVoiceManager::new(max_voices, sample_rate_hz)
+            .ok_or_else(|| "Invalid audio voice manager configuration.".to_string())?;
+
+        let stream = device
+            .build_output_stream(
+                config,
+                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    // Drain pending commands without blocking or allocating.
+                    while let Some(command) = receiver.try_receive() {
+                        match command {
+                            NoteCommand::NoteOn {
+                                voice_id,
+                                frequency_hz,
+                                gain,
+                            } => {
+                                let _ = manager.note_on(voice_id, frequency_hz, gain);
+                            }
+                            NoteCommand::NoteOff { voice_id } => {
+                                let _ = manager.note_off(voice_id);
+                            }
+                        }
+                    }
+
+                    // Render the active voices into every output channel.
+                    for frame in data.chunks_mut(channels) {
+                        let sample = manager.next_sample();
+
+                        for channel in frame {
+                            *channel = sample;
+                        }
+                    }
+                },
+                |error| eprintln!("Audio command stream error: {error}"),
+                None,
+            )
+            .map_err(|error| format!("Failed to build audio command stream: {error}"))?;
+
+        stream
+            .play()
+            .map_err(|error| format!("Failed to start audio command stream: {error}"))?;
 
         Ok(Self { _stream: stream })
     }

@@ -8,6 +8,7 @@ members = [
 
 [workspace.dependencies]
 cpal = "0.18.2"
+rtrb = "0.4.1"
 
 [workspace.package]
 version = "0.1.0"
