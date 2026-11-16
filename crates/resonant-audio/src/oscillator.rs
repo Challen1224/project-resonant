@@ -10,6 +10,7 @@ use std::f32::consts::TAU;
 pub struct SineOscillator {
     phase: f32,
     phase_increment: f32,
+    sample_rate_hz: f32,
     amplitude: f32,
 }
 
@@ -35,8 +36,36 @@ impl SineOscillator {
         Some(Self {
             phase: 0.0,
             phase_increment: TAU * frequency_hz / sample_rate_hz,
+            sample_rate_hz,
             amplitude,
         })
+    }
+
+    /// Changes the oscillator frequency without resetting its phase.
+    ///
+    /// Returns `false` if the frequency is invalid or exceeds Nyquist.
+    pub fn set_frequency_hz(&mut self, frequency_hz: f32) -> bool {
+        if !frequency_hz.is_finite()
+            || frequency_hz < 0.0
+            || frequency_hz > self.sample_rate_hz / 2.0
+        {
+            return false;
+        }
+
+        self.phase_increment = TAU * frequency_hz / self.sample_rate_hz;
+        true
+    }
+
+    /// Changes the oscillator amplitude.
+    ///
+    /// Returns `false` if the amplitude is outside the range 0..=1.
+    pub fn set_amplitude(&mut self, amplitude: f32) -> bool {
+        if !amplitude.is_finite() || !(0.0..=1.0).contains(&amplitude) {
+            return false;
+        }
+
+        self.amplitude = amplitude;
+        true
     }
 
     /// Generates the next audio sample.
@@ -57,6 +86,7 @@ impl SineOscillator {
 #[cfg(test)]
 mod tests {
     use super::SineOscillator;
+    use std::f32::consts::TAU;
 
     #[test]
     fn oscillator_starts_at_zero() {
@@ -83,6 +113,53 @@ mod tests {
         assert!(SineOscillator::new(-1.0, 48_000.0, 0.2).is_none());
         assert!(SineOscillator::new(24_001.0, 48_000.0, 0.2).is_none());
         assert!(SineOscillator::new(440.0, 48_000.0, 1.5).is_none());
+    }
+
+    #[test]
+    fn oscillator_frequency_can_change_without_resetting_phase() {
+        let mut oscillator =
+            SineOscillator::new(440.0, 48_000.0, 0.2).expect("valid oscillator configuration");
+
+        let _ = oscillator.next_sample();
+        let phase_before_update = oscillator.phase;
+
+        assert!(oscillator.set_frequency_hz(880.0));
+        assert_eq!(oscillator.phase, phase_before_update);
+        assert_eq!(oscillator.phase_increment, TAU * 880.0 / 48_000.0);
+    }
+
+    #[test]
+    fn oscillator_rejects_invalid_frequency_updates() {
+        let mut oscillator =
+            SineOscillator::new(440.0, 48_000.0, 0.2).expect("valid oscillator configuration");
+        let original_increment = oscillator.phase_increment;
+
+        assert!(!oscillator.set_frequency_hz(f32::NAN));
+        assert!(!oscillator.set_frequency_hz(f32::INFINITY));
+        assert!(!oscillator.set_frequency_hz(-1.0));
+        assert!(!oscillator.set_frequency_hz(24_001.0));
+        assert_eq!(oscillator.phase_increment, original_increment);
+    }
+
+    #[test]
+    fn oscillator_amplitude_can_change() {
+        let mut oscillator =
+            SineOscillator::new(440.0, 48_000.0, 0.2).expect("valid oscillator configuration");
+
+        assert!(oscillator.set_amplitude(0.7));
+        assert_eq!(oscillator.amplitude, 0.7);
+    }
+
+    #[test]
+    fn oscillator_rejects_invalid_amplitude_updates() {
+        let mut oscillator =
+            SineOscillator::new(440.0, 48_000.0, 0.2).expect("valid oscillator configuration");
+
+        assert!(!oscillator.set_amplitude(f32::NAN));
+        assert!(!oscillator.set_amplitude(f32::INFINITY));
+        assert!(!oscillator.set_amplitude(-0.1));
+        assert!(!oscillator.set_amplitude(1.1));
+        assert_eq!(oscillator.amplitude, 0.2);
     }
 
     #[test]
