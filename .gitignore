@@ -1,0 +1,16 @@
+# Rust build artifacts
+/target/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Application-generated data
+*.log
+/crash-reports/
+/cache/
