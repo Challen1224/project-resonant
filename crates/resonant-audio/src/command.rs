@@ -16,6 +16,17 @@ pub enum NoteCommand {
         /// Linear voice gain in the range 0.0 to 1.0.
         gain: f32,
     },
+    /// Starts a voice with an explicitly selected oscillator waveform.
+    NoteOnWithWaveform {
+        /// Identifier used to match this voice with its Note Off command.
+        voice_id: u64,
+        /// Oscillator frequency in hertz.
+        frequency_hz: f32,
+        /// Linear voice gain in the range 0.0 to 1.0.
+        gain: f32,
+        /// Waveform used by the voice oscillator.
+        waveform: crate::oscillator::Waveform,
+    },
     /// Begins the release stage for the voice identified by `voice_id`.
     NoteOff {
         /// Identifier of the voice to stop.
@@ -91,6 +102,7 @@ impl NoteCommandReceiver {
 #[cfg(test)]
 mod tests {
     use super::{NoteCommand, note_command_channel};
+    use crate::oscillator::Waveform;
 
     fn note_on(voice_id: u64, frequency_hz: f32) -> NoteCommand {
         NoteCommand::NoteOn {
@@ -121,6 +133,20 @@ mod tests {
         assert_eq!(receiver.try_receive(), Some(second));
         assert_eq!(receiver.try_receive(), Some(third));
         assert_eq!(receiver.try_receive(), None);
+    }
+
+    #[test]
+    fn command_channel_preserves_waveform_note_on_commands() {
+        let (mut sender, mut receiver) = note_command_channel(1).expect("valid queue capacity");
+        let command = NoteCommand::NoteOnWithWaveform {
+            voice_id: 7,
+            frequency_hz: 330.0,
+            gain: 0.4,
+            waveform: Waveform::Triangle,
+        };
+
+        assert_eq!(sender.try_send(command), Ok(()));
+        assert_eq!(receiver.try_receive(), Some(command));
     }
 
     #[test]

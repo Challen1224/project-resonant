@@ -1,29 +1,44 @@
 //! Reusable audio voice primitives.
 
 use crate::envelope::{AdsrEnvelope, AdsrParameters};
-use crate::oscillator::SineOscillator;
+use crate::oscillator::{Oscillator, Waveform};
 
 /// A playable audio voice with an oscillator, gain, and amplitude envelope.
 ///
 /// A voice owns its DSP state and performs no allocation while rendering.
 #[derive(Clone, Copy, Debug)]
 pub struct AudioVoice {
-    oscillator: SineOscillator,
+    oscillator: Oscillator,
     envelope: AdsrEnvelope,
     gain: f32,
 }
 
 impl AudioVoice {
-    /// Creates an immediate full-level voice with the requested frequency,
-    /// sample rate, and gain.
+    /// Creates an immediate full-level sine voice.
     ///
     /// Gain must be finite and within `0.0..=1.0`.
     /// Returns `None` if any configuration value is invalid.
     #[must_use]
     pub fn new(frequency_hz: f32, sample_rate_hz: f32, gain: f32) -> Option<Self> {
-        let envelope_parameters = AdsrParameters::new(0.0, 0.0, 1.0, 0.0)?;
+        Self::new_with_waveform(frequency_hz, sample_rate_hz, gain, Waveform::Sine)
+    }
 
-        Self::new_with_envelope(frequency_hz, sample_rate_hz, gain, envelope_parameters)
+    /// Creates an immediate full-level voice using the requested waveform.
+    #[must_use]
+    pub fn new_with_waveform(
+        frequency_hz: f32,
+        sample_rate_hz: f32,
+        gain: f32,
+        waveform: Waveform,
+    ) -> Option<Self> {
+        let envelope_parameters = AdsrParameters::new(0.0, 0.0, 1.0, 0.0)?;
+        Self::new_with_envelope_and_waveform(
+            frequency_hz,
+            sample_rate_hz,
+            gain,
+            envelope_parameters,
+            waveform,
+        )
     }
 
     /// Creates a voice with custom ADSR envelope parameters.
@@ -36,11 +51,30 @@ impl AudioVoice {
         gain: f32,
         envelope_parameters: AdsrParameters,
     ) -> Option<Self> {
+        Self::new_with_envelope_and_waveform(
+            frequency_hz,
+            sample_rate_hz,
+            gain,
+            envelope_parameters,
+            Waveform::Sine,
+        )
+    }
+
+    /// Creates a voice with custom ADSR envelope parameters and waveform.
+    #[must_use]
+    pub fn new_with_envelope_and_waveform(
+        frequency_hz: f32,
+        sample_rate_hz: f32,
+        gain: f32,
+        envelope_parameters: AdsrParameters,
+        waveform: Waveform,
+    ) -> Option<Self> {
         if !gain.is_finite() || !(0.0..=1.0).contains(&gain) {
             return None;
         }
 
-        let oscillator = SineOscillator::new(frequency_hz, sample_rate_hz, 1.0)?;
+        let oscillator =
+            Oscillator::new_with_waveform(frequency_hz, sample_rate_hz, 1.0, waveform)?;
         let mut envelope = AdsrEnvelope::new(envelope_parameters, sample_rate_hz)?;
         envelope.note_on();
 
@@ -56,6 +90,17 @@ impl AudioVoice {
     /// Returns `false` if the frequency is invalid or exceeds Nyquist.
     pub fn set_frequency_hz(&mut self, frequency_hz: f32) -> bool {
         self.oscillator.set_frequency_hz(frequency_hz)
+    }
+
+    /// Changes the oscillator waveform without resetting its phase.
+    pub fn set_waveform(&mut self, waveform: Waveform) {
+        self.oscillator.set_waveform(waveform);
+    }
+
+    /// Returns the current oscillator waveform.
+    #[must_use]
+    pub fn waveform(&self) -> Waveform {
+        self.oscillator.waveform()
     }
 
     /// Changes the voice gain.
@@ -98,13 +143,46 @@ impl AudioVoice {
 mod tests {
     use super::AudioVoice;
     use crate::envelope::AdsrParameters;
-    use crate::oscillator::SineOscillator;
+    use crate::oscillator::{SineOscillator, Waveform};
 
     #[test]
     fn voice_starts_at_zero_phase() {
         let mut voice = AudioVoice::new(440.0, 48_000.0, 0.5).expect("valid voice configuration");
-
         assert_eq!(voice.next_sample(), 0.0);
+    }
+
+    #[test]
+    fn voice_defaults_to_sine_wave() {
+        let voice = AudioVoice::new(440.0, 48_000.0, 0.5).expect("valid voice configuration");
+        assert_eq!(voice.waveform(), Waveform::Sine);
+    }
+
+    #[test]
+    fn voice_generates_samples_for_each_waveform() {
+        let cases = [
+            (Waveform::Sine, 0.0),
+            (Waveform::Square, 0.5),
+            (Waveform::Sawtooth, -0.5),
+            (Waveform::Triangle, -0.5),
+        ];
+
+        for (waveform, expected) in cases {
+            let mut voice = AudioVoice::new_with_waveform(1.0, 4.0, 0.5, waveform)
+                .expect("valid voice configuration");
+
+            assert_eq!(voice.next_sample(), expected, "waveform: {waveform:?}");
+        }
+    }
+
+    #[test]
+    fn changing_voice_waveform_preserves_phase() {
+        let mut voice = AudioVoice::new(1.0, 4.0, 1.0).expect("valid voice configuration");
+
+        let _ = voice.next_sample();
+        voice.set_waveform(Waveform::Square);
+
+        assert_eq!(voice.waveform(), Waveform::Square);
+        assert_eq!(voice.next_sample(), 1.0);
     }
 
     #[test]
@@ -168,10 +246,29 @@ mod tests {
         let _ = voice.next_sample();
 
         voice.note_off();
-
         assert!(voice.is_active());
+
         let _ = voice.next_sample();
         let _ = voice.next_sample();
+
         assert!(!voice.is_active());
+    }
+
+    #[test]
+    fn voice_supports_custom_envelope_and_waveform() {
+        let envelope =
+            AdsrParameters::new(0.002, 0.002, 0.5, 0.002).expect("valid envelope parameters");
+
+        let voice = AudioVoice::new_with_envelope_and_waveform(
+            440.0,
+            1_000.0,
+            0.5,
+            envelope,
+            Waveform::Triangle,
+        )
+        .expect("valid voice configuration");
+
+        assert_eq!(voice.waveform(), Waveform::Triangle);
+        assert!(voice.is_active());
     }
 }

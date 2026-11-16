@@ -371,6 +371,19 @@ impl AudioCommandOutput {
                             } => {
                                 let _ = manager.note_on(voice_id, frequency_hz, gain);
                             }
+                            NoteCommand::NoteOnWithWaveform {
+                                voice_id,
+                                frequency_hz,
+                                gain,
+                                waveform,
+                            } => {
+                                let _ = manager.note_on_with_waveform(
+                                    voice_id,
+                                    frequency_hz,
+                                    gain,
+                                    waveform,
+                                );
+                            }
                             NoteCommand::NoteOff { voice_id } => {
                                 let _ = manager.note_off(voice_id);
                             }

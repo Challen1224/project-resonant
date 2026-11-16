@@ -1,6 +1,7 @@
 //! Fixed-capacity voice management for real-time audio rendering.
 
 use crate::envelope::{AdsrEnvelope, AdsrParameters};
+use crate::oscillator::Waveform;
 use crate::voice::AudioVoice;
 
 /// An active voice paired with its application-assigned identifier.
@@ -82,11 +83,26 @@ impl AudioVoiceManager {
     /// An existing voice with the same identifier is replaced. Returns
     /// `false` if the voice configuration is invalid or all slots are full.
     pub fn note_on(&mut self, voice_id: u64, frequency_hz: f32, gain: f32) -> bool {
-        let Some(voice) = AudioVoice::new_with_envelope(
+        self.note_on_with_waveform(voice_id, frequency_hz, gain, Waveform::Sine)
+    }
+
+    /// Starts or replaces a voice using the supplied oscillator waveform.
+    ///
+    /// An existing voice with the same identifier is replaced. Returns
+    /// `false` if the voice configuration is invalid or all slots are full.
+    pub fn note_on_with_waveform(
+        &mut self,
+        voice_id: u64,
+        frequency_hz: f32,
+        gain: f32,
+        waveform: Waveform,
+    ) -> bool {
+        let Some(voice) = AudioVoice::new_with_envelope_and_waveform(
             frequency_hz,
             self.sample_rate_hz,
             gain,
             self.envelope_parameters,
+            waveform,
         ) else {
             return false;
         };
@@ -235,6 +251,25 @@ mod tests {
         let _ = manager.next_sample();
 
         assert_eq!(manager.voice_count(), 0);
+    }
+
+    #[test]
+    fn manager_generates_samples_for_each_waveform() {
+        use crate::oscillator::Waveform;
+
+        let cases = [
+            (Waveform::Sine, 0.0),
+            (Waveform::Square, 0.5),
+            (Waveform::Sawtooth, -0.5),
+            (Waveform::Triangle, -0.5),
+        ];
+
+        for (waveform, expected) in cases {
+            let mut manager = AudioVoiceManager::new(1, 4.0).expect("valid manager configuration");
+
+            assert!(manager.note_on_with_waveform(1, 1.0, 0.5, waveform));
+            assert_eq!(manager.next_sample(), expected, "waveform: {waveform:?}");
+        }
     }
 
     #[test]

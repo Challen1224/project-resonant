@@ -1,33 +1,50 @@
 //! Sample-generating oscillator primitives.
 
-use std::f32::consts::TAU;
+/// Available oscillator waveform shapes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Waveform {
+    /// Smooth sinusoidal waveform.
+    Sine,
+    /// Two-level waveform with an abrupt transition.
+    Square,
+    /// Rising ramp waveform with an abrupt wraparound.
+    Sawtooth,
+    /// Linear rising and falling waveform.
+    Triangle,
+}
 
-/// A sine-wave oscillator that generates one sample at a time.
-///
-/// The oscillator performs no allocation and is suitable for use inside
-/// a real-time audio callback.
+/// A phase-continuous oscillator supporting multiple waveform shapes.
 #[derive(Clone, Copy, Debug)]
-pub struct SineOscillator {
+pub struct Oscillator {
     phase: f32,
     phase_increment: f32,
     sample_rate_hz: f32,
     amplitude: f32,
+    waveform: Waveform,
 }
 
-impl SineOscillator {
-    /// Creates an oscillator with the requested frequency, sample rate,
-    /// and amplitude.
-    ///
-    /// Returns `None` if the configuration is invalid or the frequency
-    /// exceeds the Nyquist frequency.
+impl Oscillator {
+    /// Creates a sine-wave oscillator.
     #[must_use]
     pub fn new(frequency_hz: f32, sample_rate_hz: f32, amplitude: f32) -> Option<Self> {
-        if !frequency_hz.is_finite()
-            || !sample_rate_hz.is_finite()
-            || !amplitude.is_finite()
-            || sample_rate_hz <= 0.0
+        Self::new_with_waveform(frequency_hz, sample_rate_hz, amplitude, Waveform::Sine)
+    }
+
+    /// Creates an oscillator with a selected waveform.
+    #[must_use]
+    pub fn new_with_waveform(
+        frequency_hz: f32,
+        sample_rate_hz: f32,
+        amplitude: f32,
+        waveform: Waveform,
+    ) -> Option<Self> {
+        if !frequency_hz.is_finite() || !sample_rate_hz.is_finite() || !amplitude.is_finite() {
+            return None;
+        }
+
+        if sample_rate_hz <= 0.0
             || frequency_hz < 0.0
-            || frequency_hz > sample_rate_hz / 2.0
+            || frequency_hz > sample_rate_hz * 0.5
             || !(0.0..=1.0).contains(&amplitude)
         {
             return None;
@@ -35,30 +52,38 @@ impl SineOscillator {
 
         Some(Self {
             phase: 0.0,
-            phase_increment: TAU * frequency_hz / sample_rate_hz,
+            phase_increment: std::f32::consts::TAU * frequency_hz / sample_rate_hz,
             sample_rate_hz,
             amplitude,
+            waveform,
         })
     }
 
-    /// Changes the oscillator frequency without resetting its phase.
-    ///
-    /// Returns `false` if the frequency is invalid or exceeds Nyquist.
+    /// Changes waveform without resetting oscillator phase.
+    pub fn set_waveform(&mut self, waveform: Waveform) {
+        self.waveform = waveform;
+    }
+
+    /// Returns the currently selected waveform.
+    #[must_use]
+    pub fn waveform(&self) -> Waveform {
+        self.waveform
+    }
+
+    /// Updates oscillator frequency while preserving phase.
     pub fn set_frequency_hz(&mut self, frequency_hz: f32) -> bool {
         if !frequency_hz.is_finite()
             || frequency_hz < 0.0
-            || frequency_hz > self.sample_rate_hz / 2.0
+            || frequency_hz > self.sample_rate_hz * 0.5
         {
             return false;
         }
 
-        self.phase_increment = TAU * frequency_hz / self.sample_rate_hz;
+        self.phase_increment = std::f32::consts::TAU * frequency_hz / self.sample_rate_hz;
         true
     }
 
-    /// Changes the oscillator amplitude.
-    ///
-    /// Returns `false` if the amplitude is outside the range 0..=1.
+    /// Updates output amplitude.
     pub fn set_amplitude(&mut self, amplitude: f32) -> bool {
         if !amplitude.is_finite() || !(0.0..=1.0).contains(&amplitude) {
             return false;
@@ -68,13 +93,28 @@ impl SineOscillator {
         true
     }
 
-    /// Generates the next audio sample.
-    #[must_use]
+    /// Generates the next oscillator sample.
     pub fn next_sample(&mut self) -> f32 {
-        let sample = self.phase.sin() * self.amplitude;
+        use std::f32::consts::{PI, TAU};
+
+        let normalized_phase = self.phase / TAU;
+
+        let raw_sample = match self.waveform {
+            Waveform::Sine => self.phase.sin(),
+            Waveform::Square => {
+                if self.phase < PI {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+            Waveform::Sawtooth => 2.0 * normalized_phase - 1.0,
+            Waveform::Triangle => 1.0 - 4.0 * (normalized_phase - 0.5).abs(),
+        };
+
+        let sample = raw_sample * self.amplitude;
 
         self.phase += self.phase_increment;
-
         if self.phase >= TAU {
             self.phase -= TAU;
         }
@@ -83,9 +123,12 @@ impl SineOscillator {
     }
 }
 
+/// Backward-compatible name for the default sine oscillator.
+pub type SineOscillator = Oscillator;
+
 #[cfg(test)]
 mod tests {
-    use super::SineOscillator;
+    use super::{Oscillator, SineOscillator, Waveform};
     use std::f32::consts::TAU;
 
     #[test]
@@ -169,5 +212,61 @@ mod tests {
 
         let _ = oscillator.next_sample();
         assert!(oscillator.next_sample() > 0.0);
+    }
+
+    #[test]
+    fn square_wave_generates_expected_samples() {
+        let mut oscillator =
+            Oscillator::new_with_waveform(1.0, 4.0, 1.0, Waveform::Square).unwrap();
+
+        assert_eq!(oscillator.next_sample(), 1.0);
+        assert_eq!(oscillator.next_sample(), 1.0);
+        assert_eq!(oscillator.next_sample(), -1.0);
+        assert_eq!(oscillator.next_sample(), -1.0);
+        assert_eq!(oscillator.next_sample(), 1.0);
+    }
+
+    #[test]
+    fn sawtooth_wave_generates_expected_samples() {
+        let mut oscillator =
+            Oscillator::new_with_waveform(1.0, 4.0, 1.0, Waveform::Sawtooth).unwrap();
+
+        let expected = [-1.0, -0.5, 0.0, 0.5];
+
+        for sample in expected {
+            assert!((oscillator.next_sample() - sample).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn triangle_wave_generates_expected_samples() {
+        let mut oscillator =
+            Oscillator::new_with_waveform(1.0, 4.0, 1.0, Waveform::Triangle).unwrap();
+
+        let expected = [-1.0, 0.0, 1.0, 0.0];
+
+        for sample in expected {
+            assert!((oscillator.next_sample() - sample).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn waveform_change_preserves_phase() {
+        let mut oscillator = Oscillator::new(1.0, 4.0, 1.0).unwrap();
+
+        oscillator.next_sample();
+        oscillator.set_waveform(Waveform::Square);
+
+        assert_eq!(oscillator.waveform(), Waveform::Square);
+        assert_eq!(oscillator.next_sample(), 1.0);
+    }
+
+    #[test]
+    fn default_constructor_selects_sine_wave() {
+        let mut oscillator = Oscillator::new(1.0, 4.0, 1.0).unwrap();
+
+        assert_eq!(oscillator.waveform(), Waveform::Sine);
+        assert!((oscillator.next_sample()).abs() < 1e-6);
+        assert!((oscillator.next_sample() - 1.0).abs() < 1e-6);
     }
 }
