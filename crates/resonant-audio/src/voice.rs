@@ -1,31 +1,54 @@
 //! Reusable audio voice primitives.
 
+use crate::envelope::{AdsrEnvelope, AdsrParameters};
 use crate::oscillator::SineOscillator;
 
-/// A playable audio voice built around a sine-wave oscillator.
+/// A playable audio voice with an oscillator, gain, and amplitude envelope.
 ///
-/// A voice owns its oscillator state and applies an independent gain
-/// to the generated samples. It performs no allocation while rendering.
+/// A voice owns its DSP state and performs no allocation while rendering.
 #[derive(Clone, Copy, Debug)]
 pub struct AudioVoice {
     oscillator: SineOscillator,
+    envelope: AdsrEnvelope,
     gain: f32,
 }
 
 impl AudioVoice {
-    /// Creates a voice with the requested frequency, sample rate, and gain.
+    /// Creates an immediate full-level voice with the requested frequency,
+    /// sample rate, and gain.
     ///
     /// Gain must be finite and within `0.0..=1.0`.
     /// Returns `None` if any configuration value is invalid.
     #[must_use]
     pub fn new(frequency_hz: f32, sample_rate_hz: f32, gain: f32) -> Option<Self> {
+        let envelope_parameters = AdsrParameters::new(0.0, 0.0, 1.0, 0.0)?;
+
+        Self::new_with_envelope(frequency_hz, sample_rate_hz, gain, envelope_parameters)
+    }
+
+    /// Creates a voice with custom ADSR envelope parameters.
+    ///
+    /// The envelope begins its attack stage immediately.
+    #[must_use]
+    pub fn new_with_envelope(
+        frequency_hz: f32,
+        sample_rate_hz: f32,
+        gain: f32,
+        envelope_parameters: AdsrParameters,
+    ) -> Option<Self> {
         if !gain.is_finite() || !(0.0..=1.0).contains(&gain) {
             return None;
         }
 
         let oscillator = SineOscillator::new(frequency_hz, sample_rate_hz, 1.0)?;
+        let mut envelope = AdsrEnvelope::new(envelope_parameters, sample_rate_hz)?;
+        envelope.note_on();
 
-        Some(Self { oscillator, gain })
+        Some(Self {
+            oscillator,
+            envelope,
+            gain,
+        })
     }
 
     /// Changes the voice frequency without resetting oscillator phase.
@@ -47,16 +70,34 @@ impl AudioVoice {
         true
     }
 
+    /// Begins the envelope's release stage.
+    pub fn note_off(&mut self) {
+        self.envelope.note_off();
+    }
+
+    /// Returns whether the envelope is still active.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.envelope.is_active()
+    }
+
+    /// Returns whether the voice is currently in its release stage.
+    #[must_use]
+    pub fn is_releasing(&self) -> bool {
+        self.envelope.is_releasing()
+    }
+
     /// Generates the next sample for this voice.
     #[must_use]
     pub fn next_sample(&mut self) -> f32 {
-        self.oscillator.next_sample() * self.gain
+        self.oscillator.next_sample() * self.gain * self.envelope.next_sample()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::AudioVoice;
+    use crate::envelope::AdsrParameters;
     use crate::oscillator::SineOscillator;
 
     #[test]
@@ -109,5 +150,28 @@ mod tests {
         assert!(AudioVoice::new(440.0, 0.0, 0.5).is_none());
         assert!(AudioVoice::new(440.0, 48_000.0, f32::NAN).is_none());
         assert!(AudioVoice::new(440.0, 48_000.0, 1.5).is_none());
+    }
+
+    #[test]
+    fn voice_supports_custom_envelope_parameters() {
+        let envelope =
+            AdsrParameters::new(0.002, 0.002, 0.5, 0.002).expect("valid envelope parameters");
+
+        let mut voice = AudioVoice::new_with_envelope(440.0, 1_000.0, 0.5, envelope)
+            .expect("valid voice configuration");
+
+        assert!(voice.is_active());
+
+        let _ = voice.next_sample();
+        let _ = voice.next_sample();
+        let _ = voice.next_sample();
+        let _ = voice.next_sample();
+
+        voice.note_off();
+
+        assert!(voice.is_active());
+        let _ = voice.next_sample();
+        let _ = voice.next_sample();
+        assert!(!voice.is_active());
     }
 }

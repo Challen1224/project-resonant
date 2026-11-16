@@ -1,6 +1,7 @@
 //! Audio output device discovery and configuration inspection.
 
 use crate::command::{NoteCommand, NoteCommandReceiver};
+use crate::envelope::AdsrParameters;
 use crate::mixer::AudioMixer;
 use crate::oscillator::SineOscillator;
 use crate::voice_manager::AudioVoiceManager;
@@ -305,7 +306,27 @@ impl AudioCommandOutput {
     /// Returns an error if the queue output cannot be initialized, no default
     /// output device exists, its configuration cannot be read, its sample
     /// format is unsupported, or the stream cannot be built or started.
-    pub fn start(mut receiver: NoteCommandReceiver, max_voices: usize) -> Result<Self, String> {
+    pub fn start(receiver: NoteCommandReceiver, max_voices: usize) -> Result<Self, String> {
+        let envelope_parameters = AdsrParameters::new(0.0, 0.0, 1.0, 0.0)
+            .ok_or_else(|| "Invalid default envelope configuration.".to_string())?;
+
+        Self::start_with_envelope(receiver, max_voices, envelope_parameters)
+    }
+
+    /// Opens the default output device with configurable voice envelopes.
+    ///
+    /// The voice manager uses the output device's actual sample rate, and all
+    /// voice storage is allocated before the audio callback starts.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same initialization errors as [`Self::start`], or an error
+    /// when the envelope configuration is invalid for the device sample rate.
+    pub fn start_with_envelope(
+        mut receiver: NoteCommandReceiver,
+        max_voices: usize,
+        envelope_parameters: AdsrParameters,
+    ) -> Result<Self, String> {
         let device = cpal::default_host()
             .default_output_device()
             .ok_or_else(|| "No default audio output device is available.".to_string())?;
@@ -332,8 +353,9 @@ impl AudioCommandOutput {
         #[allow(clippy::cast_precision_loss)]
         let sample_rate_hz = config.sample_rate as f32;
 
-        let mut manager = AudioVoiceManager::new(max_voices, sample_rate_hz)
-            .ok_or_else(|| "Invalid audio voice manager configuration.".to_string())?;
+        let mut manager =
+            AudioVoiceManager::new_with_envelope(max_voices, sample_rate_hz, envelope_parameters)
+                .ok_or_else(|| "Invalid audio voice manager configuration.".to_string())?;
 
         let stream = device
             .build_output_stream(

@@ -16,7 +16,7 @@ pub enum NoteCommand {
         /// Linear voice gain in the range 0.0 to 1.0.
         gain: f32,
     },
-    /// Immediately stops the voice identified by `voice_id`.
+    /// Begins the release stage for the voice identified by `voice_id`.
     NoteOff {
         /// Identifier of the voice to stop.
         voice_id: u64,

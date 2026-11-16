@@ -3,6 +3,7 @@
 pub mod device;
 
 pub mod command;
+pub mod envelope;
 pub mod mixer;
 pub mod oscillator;
 pub mod voice;
