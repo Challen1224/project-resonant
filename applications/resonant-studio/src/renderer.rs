@@ -22,6 +22,7 @@ pub(crate) struct Renderer {
     ui_pipeline: wgpu::RenderPipeline,
     text_brush: TextBrush,
     selected_clip: f32,
+    selected_browser_asset: f32,
     playhead_x: f32,
     is_playing: bool,
     last_playback_update: Instant,
@@ -182,6 +183,7 @@ impl Renderer {
             ui_pipeline,
             text_brush,
             selected_clip: -1.0,
+            selected_browser_asset: -1.0,
             playhead_x: 0.0,
             is_playing: false,
             last_playback_update: Instant::now(),
@@ -225,6 +227,29 @@ impl Renderer {
                 self.playhead_x = 0.0;
                 self.last_playback_update = Instant::now();
             }
+            return;
+        }
+
+        // Browser asset selection.
+        if x < 260.0 && y < mixer_top {
+            self.selected_browser_asset = -1.0;
+
+            if (12.0..248.0).contains(&x) {
+                for (asset_id, row_start) in [
+                    (0.0, 154.0),
+                    (1.0, 188.0),
+                    (2.0, 222.0),
+                    (3.0, 316.0),
+                    (4.0, 350.0),
+                    (5.0, 384.0),
+                ] {
+                    if (row_start..row_start + 36.0).contains(&y) {
+                        self.selected_browser_asset = asset_id;
+                        break;
+                    }
+                }
+            }
+
             return;
         }
 
@@ -327,6 +352,7 @@ impl Renderer {
         viewport_bytes[12..16].copy_from_slice(&self.playhead_x.to_ne_bytes());
         let playing = f32::from(self.is_playing);
         viewport_bytes[16..20].copy_from_slice(&playing.to_ne_bytes());
+        viewport_bytes[20..24].copy_from_slice(&self.selected_browser_asset.to_ne_bytes());
 
         self.queue
             .write_buffer(&self.viewport_buffer, 0, &viewport_bytes);
@@ -418,7 +444,8 @@ fn make_transport_text_section(
 }
 
 /// Builds the text labels displayed across the Studio interface.
-fn build_text_sections(width: f32, height: f32) -> [Section<'static>; 16] {
+#[allow(clippy::too_many_lines)]
+fn build_text_sections(width: f32, height: f32) -> [Section<'static>; 24] {
     [
         make_brand_text_section(width),
         make_transport_text_section("PLAY", (307.0, 17.0), [1.0, 1.0, 1.0, 1.0]),
@@ -427,8 +454,64 @@ fn build_text_sections(width: f32, height: f32) -> [Section<'static>; 16] {
             "BROWSER",
             (20.0, 78.0),
             (220.0, 28.0),
-            24.0,
+            26.0,
             [0.88, 0.89, 0.96, 1.0],
+        ),
+        make_text_section(
+            "INSTRUMENTS",
+            (20.0, 130.0),
+            (220.0, 22.0),
+            17.0,
+            [0.66, 0.69, 0.80, 1.0],
+        ),
+        make_text_section(
+            "Analog Synth",
+            (30.0, 164.0),
+            (210.0, 24.0),
+            20.0,
+            [0.91, 0.88, 1.0, 1.0],
+        ),
+        make_text_section(
+            "Electric Piano",
+            (30.0, 198.0),
+            (210.0, 24.0),
+            20.0,
+            [0.84, 0.88, 0.96, 1.0],
+        ),
+        make_text_section(
+            "Sub Bass",
+            (30.0, 232.0),
+            (210.0, 24.0),
+            20.0,
+            [0.84, 0.88, 0.96, 1.0],
+        ),
+        make_text_section(
+            "SAMPLES",
+            (20.0, 292.0),
+            (220.0, 22.0),
+            17.0,
+            [0.66, 0.69, 0.80, 1.0],
+        ),
+        make_text_section(
+            "Drum Kit",
+            (30.0, 326.0),
+            (210.0, 24.0),
+            20.0,
+            [0.84, 0.91, 0.96, 1.0],
+        ),
+        make_text_section(
+            "Percussion",
+            (30.0, 360.0),
+            (210.0, 24.0),
+            20.0,
+            [0.84, 0.88, 0.96, 1.0],
+        ),
+        make_text_section(
+            "Atmosphere",
+            (30.0, 394.0),
+            (210.0, 24.0),
+            20.0,
+            [0.84, 0.88, 0.96, 1.0],
         ),
         make_text_section(
             "ARRANGE",
@@ -537,6 +620,7 @@ struct Viewport {
     selected_clip: f32,
     playhead_x: f32,
     is_playing: f32,
+    selected_browser_asset: f32,
 };
 
 @group(0) @binding(0)
@@ -655,6 +739,33 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
             }
             return vec4<f32>(panel_header, 1.0);
         }
+
+        // Highlight the selected Browser asset row.
+        var browser_asset_index = -1.0;
+        if y >= 154.0 && y < 190.0 {
+            browser_asset_index = 0.0;
+        } else if y >= 188.0 && y < 224.0 {
+            browser_asset_index = 1.0;
+        } else if y >= 222.0 && y < 258.0 {
+            browser_asset_index = 2.0;
+        } else if y >= 316.0 && y < 352.0 {
+            browser_asset_index = 3.0;
+        } else if y >= 350.0 && y < 386.0 {
+            browser_asset_index = 4.0;
+        } else if y >= 384.0 && y < 420.0 {
+            browser_asset_index = 5.0;
+        }
+
+        if browser_asset_index >= 0.0
+            && browser_asset_index == viewport.selected_browser_asset
+            && x >= 12.0 && x < 248.0
+        {
+            if x < 16.0 {
+                return vec4<f32>(0.52, 0.35, 0.92, 1.0);
+            }
+            return vec4<f32>(0.115, 0.090, 0.175, 1.0);
+        }
+
         return vec4<f32>(browser, 1.0);
     }
 
