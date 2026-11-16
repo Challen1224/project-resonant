@@ -359,7 +359,7 @@ impl Renderer {
 
         let width = viewport_dimension(self.configuration.width);
         let height = viewport_dimension(self.configuration.height);
-        let text_sections = build_text_sections(width, height);
+        let text_sections = build_text_sections(width, height, self.selected_browser_asset);
 
         if let Err(error) = self
             .text_brush
@@ -445,7 +445,49 @@ fn make_transport_text_section(
 
 /// Builds the text labels displayed across the Studio interface.
 #[allow(clippy::too_many_lines)]
-fn build_text_sections(width: f32, height: f32) -> [Section<'static>; 24] {
+fn build_text_sections(
+    width: f32,
+    height: f32,
+    selected_browser_asset: f32,
+) -> [Section<'static>; 28] {
+    let (asset_name, asset_type, asset_description) = match selected_browser_asset {
+        0.0 => (
+            "Analog Synth",
+            "INSTRUMENT / SYNTH",
+            "A flexible synth for melodic sounds.",
+        ),
+        1.0 => (
+            "Electric Piano",
+            "INSTRUMENT / KEYS",
+            "Warm electric piano tones.",
+        ),
+        2.0 => (
+            "Sub Bass",
+            "INSTRUMENT / BASS",
+            "A deep low-frequency foundation.",
+        ),
+        3.0 => (
+            "Drum Kit",
+            "SAMPLE / DRUMS",
+            "A collection of rhythmic drum sounds.",
+        ),
+        4.0 => (
+            "Percussion",
+            "SAMPLE / PERCUSSION",
+            "Extra rhythmic accents and textures.",
+        ),
+        5.0 => (
+            "Atmosphere",
+            "SAMPLE / AMBIENCE",
+            "Ambient textures for your tracks.",
+        ),
+        _ => (
+            "No asset selected",
+            "BROWSER LIBRARY",
+            "Select an item above to view its details.",
+        ),
+    };
+
     [
         make_brand_text_section(width),
         make_transport_text_section("PLAY", (307.0, 17.0), [1.0, 1.0, 1.0, 1.0]),
@@ -512,6 +554,34 @@ fn build_text_sections(width: f32, height: f32) -> [Section<'static>; 24] {
             (210.0, 24.0),
             20.0,
             [0.84, 0.88, 0.96, 1.0],
+        ),
+        make_text_section(
+            "ASSET DETAILS",
+            (20.0, 456.0),
+            (220.0, 22.0),
+            17.0,
+            [0.66, 0.69, 0.80, 1.0],
+        ),
+        make_text_section(
+            asset_name,
+            (30.0, 492.0),
+            (210.0, 26.0),
+            21.0,
+            [0.91, 0.88, 1.0, 1.0],
+        ),
+        make_text_section(
+            asset_type,
+            (30.0, 528.0),
+            (210.0, 20.0),
+            14.0,
+            [0.52, 0.78, 0.91, 1.0],
+        ),
+        make_text_section(
+            asset_description,
+            (30.0, 560.0),
+            (210.0, 44.0),
+            14.0,
+            [0.76, 0.78, 0.86, 1.0],
         ),
         make_text_section(
             "ARRANGE",
@@ -764,6 +834,16 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
                 return vec4<f32>(0.52, 0.35, 0.92, 1.0);
             }
             return vec4<f32>(0.115, 0.090, 0.175, 1.0);
+        }
+
+        if y >= 444.0 && x >= 12.0 && x < 248.0 {
+            if y < 478.0 {
+                return vec4<f32>(panel_header, 1.0);
+            }
+            if y < 480.0 {
+                return vec4<f32>(panel_header_edge, 1.0);
+            }
+            return vec4<f32>(0.055, 0.060, 0.082, 1.0);
         }
 
         return vec4<f32>(browser, 1.0);
