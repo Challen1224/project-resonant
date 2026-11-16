@@ -1,6 +1,6 @@
 //! GPU surface initialization and frame presentation.
 
-use std::{error::Error, io, sync::Arc};
+use std::{error::Error, io, sync::Arc, time::Instant};
 
 use wgpu_text::{
     BrushBuilder, TextBrush,
@@ -23,6 +23,8 @@ pub(crate) struct Renderer {
     text_brush: TextBrush,
     selected_clip: f32,
     playhead_x: f32,
+    is_playing: bool,
+    last_playback_update: Instant,
 }
 
 impl Renderer {
@@ -95,7 +97,7 @@ impl Renderer {
 
         let viewport_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Resonant Studio Viewport Interaction State"),
-            size: 16,
+            size: 24,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -181,6 +183,8 @@ impl Renderer {
             text_brush,
             selected_clip: -1.0,
             playhead_x: 0.0,
+            is_playing: false,
+            last_playback_update: Instant::now(),
         })
     }
 
@@ -211,7 +215,20 @@ impl Renderer {
         let arrangement_header = 104.0;
         let mixer_top = viewport_dimension(self.configuration.height) - 220.0;
 
-        if x < timeline_origin_x || y < 58.0 || y >= mixer_top {
+        // Toolbar transport controls.
+        if y < 58.0 {
+            if (292.0..354.0).contains(&x) {
+                self.is_playing = true;
+                self.last_playback_update = Instant::now();
+            } else if (362.0..424.0).contains(&x) {
+                self.is_playing = false;
+                self.playhead_x = 0.0;
+                self.last_playback_update = Instant::now();
+            }
+            return;
+        }
+
+        if x < timeline_origin_x || y >= mixer_top {
             return;
         }
 
@@ -260,6 +277,31 @@ impl Renderer {
         }
     }
 
+    /// Returns whether the transport is currently playing.
+    pub(crate) fn is_playing(&self) -> bool {
+        self.is_playing
+    }
+
+    /// Advances the playhead using elapsed wall-clock time.
+    pub(crate) fn advance_playback(&mut self) {
+        if !self.is_playing {
+            return;
+        }
+
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_playback_update).as_secs_f32();
+        self.last_playback_update = now;
+
+        // Prototype tempo: 80 timeline pixels per second.
+        self.playhead_x += elapsed * 80.0;
+
+        let timeline_width = viewport_dimension(self.configuration.width) - 420.0;
+        if self.playhead_x >= timeline_width {
+            self.playhead_x = timeline_width.max(0.0);
+            self.is_playing = false;
+        }
+    }
+
     /// Clears and presents one GPU-rendered frame.
     pub(crate) fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let frame = match self.surface.get_current_texture() {
@@ -276,13 +318,15 @@ impl Renderer {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut viewport_bytes = [0_u8; 16];
+        let mut viewport_bytes = [0_u8; 24];
         viewport_bytes[0..4]
             .copy_from_slice(&viewport_dimension(self.configuration.width).to_ne_bytes());
         viewport_bytes[4..8]
             .copy_from_slice(&viewport_dimension(self.configuration.height).to_ne_bytes());
         viewport_bytes[8..12].copy_from_slice(&self.selected_clip.to_ne_bytes());
         viewport_bytes[12..16].copy_from_slice(&self.playhead_x.to_ne_bytes());
+        let playing = f32::from(self.is_playing);
+        viewport_bytes[16..20].copy_from_slice(&playing.to_ne_bytes());
 
         self.queue
             .write_buffer(&self.viewport_buffer, 0, &viewport_bytes);
@@ -353,106 +397,122 @@ fn make_text_section(
         .add_text(Text::new(text).with_scale(scale).with_color(color))
 }
 
+/// Creates the Resonant Studio brand label.
+fn make_brand_text_section(width: f32) -> Section<'static> {
+    make_text_section(
+        "RESONANT",
+        (20.0, 18.0),
+        (width - 40.0, 40.0),
+        32.0,
+        [0.91, 0.91, 0.97, 1.0],
+    )
+}
+
+/// Creates a prominent transport control label.
+fn make_transport_text_section(
+    text: &'static str,
+    position: (f32, f32),
+    color: [f32; 4],
+) -> Section<'static> {
+    make_text_section(text, position, (50.0, 26.0), 16.0, color)
+}
+
 /// Builds the text labels displayed across the Studio interface.
-fn build_text_sections(width: f32, height: f32) -> [Section<'static>; 14] {
+fn build_text_sections(width: f32, height: f32) -> [Section<'static>; 16] {
     [
-        make_text_section(
-            "RESONANT",
-            (20.0, 18.0),
-            (width - 40.0, 36.0),
-            30.0,
-            [0.91, 0.91, 0.97, 1.0],
-        ),
+        make_brand_text_section(width),
+        make_transport_text_section("PLAY", (307.0, 17.0), [1.0, 1.0, 1.0, 1.0]),
+        make_transport_text_section("STOP", (379.0, 17.0), [0.91, 0.90, 0.96, 1.0]),
         make_text_section(
             "BROWSER",
             (20.0, 78.0),
             (220.0, 28.0),
-            20.0,
-            [0.78, 0.80, 0.88, 1.0],
+            24.0,
+            [0.88, 0.89, 0.96, 1.0],
         ),
         make_text_section(
-            "ARRANGEMENT",
+            "ARRANGE",
             (284.0, 78.0),
             (width - 300.0, 28.0),
-            20.0,
-            [0.78, 0.80, 0.88, 1.0],
+            24.0,
+            [0.88, 0.89, 0.96, 1.0],
         ),
         make_text_section(
             "MIXER",
             (20.0, height - 194.0),
             (width - 40.0, 28.0),
-            20.0,
-            [0.78, 0.80, 0.88, 1.0],
+            24.0,
+            [0.88, 0.89, 0.96, 1.0],
         ),
         make_text_section(
             "DRUMS",
             (280.0, 138.0),
             (120.0, 24.0),
-            14.0,
-            [0.82, 0.83, 0.91, 1.0],
+            18.0,
+            [0.91, 0.92, 0.98, 1.0],
         ),
         make_text_section(
             "BASS",
             (280.0, 282.0),
             (120.0, 24.0),
-            14.0,
-            [0.82, 0.83, 0.91, 1.0],
+            18.0,
+            [0.91, 0.92, 0.98, 1.0],
         ),
         make_text_section(
             "LEAD",
             (280.0, 426.0),
             (120.0, 24.0),
-            14.0,
-            [0.82, 0.83, 0.91, 1.0],
+            18.0,
+            [0.91, 0.92, 0.98, 1.0],
         ),
         make_text_section(
             "ATMOS",
             (280.0, 570.0),
             (120.0, 24.0),
-            14.0,
-            [0.82, 0.83, 0.91, 1.0],
+            18.0,
+            [0.91, 0.92, 0.98, 1.0],
         ),
         make_text_section(
             "1",
             (430.0, 78.0),
             (32.0, 20.0),
-            12.0,
-            [0.78, 0.80, 0.88, 1.0],
+            15.0,
+            [0.88, 0.89, 0.96, 1.0],
         ),
         make_text_section(
             "2",
             (590.0, 78.0),
             (32.0, 20.0),
-            12.0,
-            [0.78, 0.80, 0.88, 1.0],
+            15.0,
+            [0.88, 0.89, 0.96, 1.0],
         ),
         make_text_section(
             "3",
             (750.0, 78.0),
             (32.0, 20.0),
-            12.0,
-            [0.78, 0.80, 0.88, 1.0],
+            15.0,
+            [0.88, 0.89, 0.96, 1.0],
         ),
         make_text_section(
             "4",
             (910.0, 78.0),
             (32.0, 20.0),
-            12.0,
-            [0.78, 0.80, 0.88, 1.0],
+            15.0,
+            [0.88, 0.89, 0.96, 1.0],
         ),
         make_text_section(
             "5",
             (1070.0, 78.0),
             (32.0, 20.0),
-            12.0,
-            [0.78, 0.80, 0.88, 1.0],
+            15.0,
+            [0.88, 0.89, 0.96, 1.0],
         ),
         make_text_section(
             "6",
             (1230.0, 78.0),
             (32.0, 20.0),
-            12.0,
-            [0.78, 0.80, 0.88, 1.0],
+            15.0,
+            [0.88, 0.89, 0.96, 1.0],
         ),
     ]
 }
@@ -476,6 +536,7 @@ struct Viewport {
     size: vec2<f32>,
     selected_clip: f32,
     playhead_x: f32,
+    is_playing: f32,
 };
 
 @group(0) @binding(0)
@@ -490,6 +551,17 @@ fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
     );
 
     return vec4<f32>(positions[index], 0.0, 1.0);
+}
+
+fn rounded_box(
+    point: vec2<f32>,
+    center: vec2<f32>,
+    half_size: vec2<f32>,
+    radius: f32
+) -> f32 {
+    let q = abs(point - center) - half_size + vec2<f32>(radius);
+    return length(max(q, vec2<f32>(0.0)))
+        + min(max(q.x, q.y), 0.0) - radius;
 }
 
 @fragment
@@ -511,14 +583,64 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let mixer = vec3<f32>(0.060, 0.067, 0.088);
     let divider = vec3<f32>(0.105, 0.115, 0.145);
     let accent = vec3<f32>(0.36, 0.23, 0.85);
+    let panel_header = vec3<f32>(0.085, 0.092, 0.125);
+    let panel_header_edge = vec3<f32>(0.16, 0.17, 0.22);
 
     if y < toolbar_height {
+        let point = vec2<f32>(x, y);
+
+        // Play button: brighter violet while playback is active.
+        let play_outer = rounded_box(
+            point, vec2<f32>(323.0, 29.0),
+            vec2<f32>(32.0, 21.0), 9.0
+        );
+        if play_outer <= 0.0 {
+            let play_inner = rounded_box(
+                point, vec2<f32>(323.0, 29.0),
+                vec2<f32>(30.0, 19.0), 7.0
+            );
+
+            if play_inner <= 0.0 {
+                if viewport.is_playing > 0.5 {
+                    return vec4<f32>(0.46, 0.31, 0.98, 1.0);
+                }
+                return vec4<f32>(0.32, 0.22, 0.72, 1.0);
+            }
+
+            return vec4<f32>(0.19, 0.15, 0.34, 1.0);
+        }
+
+        // Stop button: contrasting charcoal surface.
+        let stop_outer = rounded_box(
+            point, vec2<f32>(393.0, 29.0),
+            vec2<f32>(32.0, 21.0), 9.0
+        );
+        if stop_outer <= 0.0 {
+            let stop_inner = rounded_box(
+                point, vec2<f32>(393.0, 29.0),
+                vec2<f32>(30.0, 19.0), 7.0
+            );
+
+            if stop_inner <= 0.0 {
+                return vec4<f32>(0.15, 0.16, 0.21, 1.0);
+            }
+
+            return vec4<f32>(0.23, 0.24, 0.31, 1.0);
+        }
+
         return vec4<f32>(toolbar, 1.0);
     }
 
     if y >= height - mixer_height {
+        let mixer_header_bottom = height - mixer_height + 52.0;
         if y < height - mixer_height + 2.0 {
             return vec4<f32>(divider, 1.0);
+        }
+        if y < mixer_header_bottom - 1.0 {
+            return vec4<f32>(panel_header, 1.0);
+        }
+        if y < mixer_header_bottom + 1.0 {
+            return vec4<f32>(panel_header_edge, 1.0);
         }
         return vec4<f32>(mixer, 1.0);
     }
@@ -526,6 +648,12 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     if x < browser_width {
         if x >= browser_width - 2.0 {
             return vec4<f32>(divider, 1.0);
+        }
+        if y < 110.0 {
+            if y >= 108.0 {
+                return vec4<f32>(panel_header_edge, 1.0);
+            }
+            return vec4<f32>(panel_header, 1.0);
         }
         return vec4<f32>(browser, 1.0);
     }

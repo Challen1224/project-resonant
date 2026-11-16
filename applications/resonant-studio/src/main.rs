@@ -2,7 +2,11 @@
 
 mod renderer;
 
-use std::{error::Error, sync::Arc};
+use std::{
+    error::Error,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use renderer::Renderer;
 use winit::{
@@ -115,6 +119,26 @@ impl ApplicationHandler for ResonantStudio {
             }
 
             _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+
+        if renderer.is_playing() {
+            renderer.advance_playback();
+
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+
+            event_loop.set_control_flow(ControlFlow::WaitUntil(
+                Instant::now() + Duration::from_millis(16),
+            ));
+        } else {
+            event_loop.set_control_flow(ControlFlow::Wait);
         }
     }
 }
