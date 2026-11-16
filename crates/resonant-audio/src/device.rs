@@ -1,5 +1,6 @@
 //! Audio output device discovery and configuration inspection.
 
+use crate::mixer::AudioMixer;
 use crate::oscillator::SineOscillator;
 use cpal::traits::StreamTrait;
 use cpal::traits::{DeviceTrait, HostTrait};
@@ -209,6 +210,73 @@ impl AudioOutput {
     #[must_use]
     pub fn set_amplitude(&self, amplitude: f32) -> bool {
         self.parameters.set_amplitude(amplitude)
+    }
+}
+
+/// A running audio output stream driven by an audio mixer.
+///
+/// The mixer is owned by the audio callback for the lifetime of the stream.
+/// Keeping this value alive keeps the underlying audio stream active.
+pub struct AudioMixerOutput {
+    _stream: Stream,
+}
+
+impl AudioMixerOutput {
+    /// Opens the default output device and starts rendering the supplied mixer.
+    ///
+    /// The mixer should be fully configured before it is passed here.
+    /// Its voices are rendered on the audio callback thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no default output device exists, its configuration
+    /// cannot be read, its sample format is unsupported, or the stream cannot
+    /// be built or started.
+    pub fn start(mut mixer: AudioMixer) -> Result<Self, String> {
+        let device = cpal::default_host()
+            .default_output_device()
+            .ok_or_else(|| "No default audio output device is available.".to_string())?;
+
+        let supported_config = device
+            .default_output_config()
+            .map_err(|error| format!("Failed to read output configuration: {error}"))?;
+
+        if supported_config.sample_format() != SampleFormat::F32 {
+            return Err(format!(
+                "Unsupported output sample format: {:?}. This prototype currently supports F32.",
+                supported_config.sample_format()
+            ));
+        }
+
+        let config: StreamConfig = supported_config.into();
+        let channels = usize::from(config.channels);
+
+        if channels == 0 {
+            return Err("The output device reported zero channels.".to_string());
+        }
+
+        let stream = device
+            .build_output_stream(
+                config,
+                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    for frame in data.chunks_mut(channels) {
+                        let sample = mixer.next_sample();
+
+                        for channel in frame {
+                            *channel = sample;
+                        }
+                    }
+                },
+                |error| eprintln!("Audio mixer stream error: {error}"),
+                None,
+            )
+            .map_err(|error| format!("Failed to build audio mixer output stream: {error}"))?;
+
+        stream
+            .play()
+            .map_err(|error| format!("Failed to start audio mixer output stream: {error}"))?;
+
+        Ok(Self { _stream: stream })
     }
 }
 
