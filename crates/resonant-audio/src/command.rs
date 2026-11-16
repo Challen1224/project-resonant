@@ -99,9 +99,119 @@ impl NoteCommandReceiver {
     }
 }
 
+/// A note command scheduled for an absolute position in the audio stream.
+///
+/// `frame` is measured in output audio frames, not individual channel samples
+/// or callback-relative offsets. Producers should enqueue scheduled commands
+/// in nondecreasing frame order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScheduledNoteCommand {
+    /// Absolute output frame at which the command should take effect.
+    pub frame: u64,
+    /// Note operation to perform at the scheduled frame.
+    pub command: NoteCommand,
+}
+
+/// The sending endpoint of a scheduled note-command queue.
+pub struct ScheduledNoteCommandSender {
+    producer: Producer<ScheduledNoteCommand>,
+    last_frame: Option<u64>,
+}
+
+/// Reasons a scheduled command could not be enqueued.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ScheduledNoteSendError {
+    /// The command's frame precedes the last accepted command's frame.
+    OutOfOrder {
+        /// The command that was rejected.
+        command: ScheduledNoteCommand,
+        /// The frame of the last successfully enqueued command.
+        last_frame: u64,
+    },
+    /// The bounded queue has no available capacity.
+    Full(ScheduledNoteCommand),
+}
+
+/// The receiving endpoint of a scheduled note-command queue.
+pub struct ScheduledNoteCommandReceiver {
+    consumer: Consumer<ScheduledNoteCommand>,
+}
+
+/// Creates a bounded queue for timestamped note commands.
+///
+/// # Errors
+///
+/// Returns an error when `capacity` is zero.
+pub fn scheduled_note_command_channel(
+    capacity: usize,
+) -> Result<(ScheduledNoteCommandSender, ScheduledNoteCommandReceiver), &'static str> {
+    if capacity == 0 {
+        return Err("Scheduled note command queue capacity must be greater than zero.");
+    }
+
+    let (producer, consumer) = RingBuffer::new(capacity);
+
+    Ok((
+        ScheduledNoteCommandSender {
+            producer,
+            last_frame: None,
+        },
+        ScheduledNoteCommandReceiver { consumer },
+    ))
+}
+
+impl ScheduledNoteCommandSender {
+    /// Attempts to enqueue a scheduled command without waiting.
+    ///
+    /// Requires commands to be submitted in nondecreasing frame order.
+    ///
+    /// Returns an error containing the original command if its frame is
+    /// earlier than the last accepted frame or the queue is full.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScheduledNoteSendError::OutOfOrder`] if the command's frame
+    /// precedes the last successfully enqueued frame, or
+    /// [`ScheduledNoteSendError::Full`] if the bounded queue has no capacity.
+    pub fn try_send(
+        &mut self,
+        command: ScheduledNoteCommand,
+    ) -> Result<(), ScheduledNoteSendError> {
+        if let Some(last_frame) = self.last_frame {
+            if command.frame < last_frame {
+                return Err(ScheduledNoteSendError::OutOfOrder {
+                    command,
+                    last_frame,
+                });
+            }
+        }
+
+        match self.producer.push(command) {
+            Ok(()) => {
+                self.last_frame = Some(command.frame);
+                Ok(())
+            }
+            Err(PushError::Full(command)) => Err(ScheduledNoteSendError::Full(command)),
+        }
+    }
+}
+
+impl ScheduledNoteCommandReceiver {
+    /// Attempts to receive one scheduled command without waiting.
+    ///
+    /// Returns `None` when the queue is empty.
+    #[must_use]
+    pub fn try_receive(&mut self) -> Option<ScheduledNoteCommand> {
+        self.consumer.pop().ok()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{NoteCommand, note_command_channel};
+    use super::{
+        NoteCommand, ScheduledNoteCommand, ScheduledNoteSendError, note_command_channel,
+        scheduled_note_command_channel,
+    };
     use crate::oscillator::Waveform;
 
     fn note_on(voice_id: u64, frequency_hz: f32) -> NoteCommand {
@@ -110,6 +220,88 @@ mod tests {
             frequency_hz,
             gain: 0.5,
         }
+    }
+
+    #[test]
+    fn scheduled_command_channel_rejects_zero_capacity() {
+        assert!(scheduled_note_command_channel(0).is_err());
+    }
+
+    #[test]
+    fn scheduled_command_channel_preserves_frame_positions_and_fifo_order() {
+        let (mut sender, mut receiver) =
+            scheduled_note_command_channel(4).expect("valid queue capacity");
+
+        let first = ScheduledNoteCommand {
+            frame: 128,
+            command: note_on(1, 440.0),
+        };
+        let second = ScheduledNoteCommand {
+            frame: 256,
+            command: NoteCommand::NoteOff { voice_id: 1 },
+        };
+        let third = ScheduledNoteCommand {
+            frame: 256,
+            command: note_on(2, 660.0),
+        };
+
+        assert_eq!(sender.try_send(first), Ok(()));
+        assert_eq!(sender.try_send(second), Ok(()));
+        assert_eq!(sender.try_send(third), Ok(()));
+
+        assert_eq!(receiver.try_receive(), Some(first));
+        assert_eq!(receiver.try_receive(), Some(second));
+        assert_eq!(receiver.try_receive(), Some(third));
+        assert_eq!(receiver.try_receive(), None);
+    }
+
+    #[test]
+    fn scheduled_command_sender_rejects_out_of_order_frames() {
+        let (mut sender, mut receiver) =
+            scheduled_note_command_channel(4).expect("valid queue capacity");
+
+        let accepted = ScheduledNoteCommand {
+            frame: 256,
+            command: note_on(1, 440.0),
+        };
+        let rejected = ScheduledNoteCommand {
+            frame: 128,
+            command: NoteCommand::NoteOff { voice_id: 1 },
+        };
+
+        assert_eq!(sender.try_send(accepted), Ok(()));
+        assert_eq!(
+            sender.try_send(rejected),
+            Err(ScheduledNoteSendError::OutOfOrder {
+                command: rejected,
+                last_frame: 256,
+            })
+        );
+
+        assert_eq!(receiver.try_receive(), Some(accepted));
+        assert_eq!(receiver.try_receive(), None);
+    }
+
+    #[test]
+    fn scheduled_command_queue_returns_rejected_command_when_full() {
+        let (mut sender, mut receiver) =
+            scheduled_note_command_channel(1).expect("valid queue capacity");
+
+        let accepted = ScheduledNoteCommand {
+            frame: 64,
+            command: note_on(1, 440.0),
+        };
+        let rejected = ScheduledNoteCommand {
+            frame: 128,
+            command: NoteCommand::NoteOff { voice_id: 1 },
+        };
+
+        assert_eq!(sender.try_send(accepted), Ok(()));
+        assert_eq!(
+            sender.try_send(rejected),
+            Err(ScheduledNoteSendError::Full(rejected))
+        );
+        assert_eq!(receiver.try_receive(), Some(accepted));
     }
 
     #[test]

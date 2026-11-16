@@ -1,15 +1,19 @@
 //! Audio output device discovery and configuration inspection.
 
-use crate::command::{NoteCommand, NoteCommandReceiver};
+use crate::command::{
+    NoteCommand, NoteCommandReceiver, ScheduledNoteCommand, ScheduledNoteCommandSender,
+    ScheduledNoteSendError, scheduled_note_command_channel,
+};
 use crate::envelope::AdsrParameters;
 use crate::mixer::AudioMixer;
 use crate::oscillator::SineOscillator;
+use crate::scheduler::ScheduledNoteRenderer;
 use crate::voice_manager::AudioVoiceManager;
 use cpal::traits::StreamTrait;
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Information about an available audio output device.
 #[derive(Clone, Debug)]
@@ -409,6 +413,147 @@ impl AudioCommandOutput {
             .map_err(|error| format!("Failed to start audio command stream: {error}"))?;
 
         Ok(Self { _stream: stream })
+    }
+}
+
+/// A running audio output stream driven by absolute-frame note commands.
+///
+/// The audio callback owns the scheduled renderer. The producer submits
+/// timestamped commands through a bounded, nonblocking SPSC queue.
+///
+/// The frame clock reports the next absolute output frame to be rendered.
+/// Producers should schedule events sufficiently ahead of that position
+/// to allow the callback to receive them before their deadlines.
+pub struct ScheduledAudioCommandOutput {
+    _stream: Stream,
+    sender: ScheduledNoteCommandSender,
+    current_frame: Arc<AtomicU64>,
+}
+
+impl ScheduledAudioCommandOutput {
+    /// Opens the default output device and starts scheduled command playback.
+    ///
+    /// The renderer starts at absolute frame zero. Queue and voice storage
+    /// are initialized before the audio callback starts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the queue capacity is zero, no default output
+    /// device exists, its configuration cannot be read, its sample format
+    /// is unsupported, or the stream cannot be built or started.
+    pub fn start(max_voices: usize, queue_capacity: usize) -> Result<Self, String> {
+        let envelope_parameters = AdsrParameters::new(0.0, 0.0, 1.0, 0.0)
+            .ok_or_else(|| "Invalid default envelope configuration.".to_string())?;
+
+        Self::start_with_envelope(max_voices, queue_capacity, envelope_parameters)
+    }
+
+    /// Opens the default output device with configurable voice envelopes.
+    ///
+    /// The frame clock begins at zero and advances once per rendered output
+    /// frame, regardless of the number of channels or callback buffer size.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same initialization errors as [`Self::start`], or an
+    /// error when the envelope configuration is invalid for the device.
+    pub fn start_with_envelope(
+        max_voices: usize,
+        queue_capacity: usize,
+        envelope_parameters: AdsrParameters,
+    ) -> Result<Self, String> {
+        let (sender, receiver) =
+            scheduled_note_command_channel(queue_capacity).map_err(str::to_string)?;
+
+        let device = cpal::default_host()
+            .default_output_device()
+            .ok_or_else(|| "No default audio output device is available.".to_string())?;
+
+        let supported_config = device
+            .default_output_config()
+            .map_err(|error| format!("Failed to read output configuration: {error}"))?;
+
+        if supported_config.sample_format() != SampleFormat::F32 {
+            return Err(format!(
+                "Unsupported output sample format: {:?}. This prototype currently supports F32.",
+                supported_config.sample_format()
+            ));
+        }
+
+        let config: StreamConfig = supported_config.into();
+        let channels = usize::from(config.channels);
+
+        if channels == 0 {
+            return Err("The output device reported zero channels.".to_string());
+        }
+
+        // Standard audio sample rates are exactly representable as f32.
+        #[allow(clippy::cast_precision_loss)]
+        let sample_rate_hz = config.sample_rate as f32;
+
+        let voice_manager =
+            AudioVoiceManager::new_with_envelope(max_voices, sample_rate_hz, envelope_parameters)
+                .ok_or_else(|| "Invalid audio voice manager configuration.".to_string())?;
+
+        let mut renderer = ScheduledNoteRenderer::new(receiver, voice_manager, 0);
+
+        let current_frame = Arc::new(AtomicU64::new(0));
+        let callback_frame = Arc::clone(&current_frame);
+
+        let stream = device
+            .build_output_stream(
+                config,
+                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    for frame in data.chunks_mut(channels) {
+                        let sample = renderer.next_sample();
+
+                        for channel in frame {
+                            *channel = sample;
+                        }
+                    }
+
+                    // Publish once per completed callback buffer rather than
+                    // performing an atomic store for every output frame.
+                    callback_frame.store(renderer.next_frame(), Ordering::Release);
+                },
+                |error| eprintln!("Scheduled audio command stream error: {error}"),
+                None,
+            )
+            .map_err(|error| format!("Failed to build scheduled audio command stream: {error}"))?;
+
+        stream
+            .play()
+            .map_err(|error| format!("Failed to start scheduled audio command stream: {error}"))?;
+
+        Ok(Self {
+            _stream: stream,
+            sender,
+            current_frame,
+        })
+    }
+
+    /// Attempts to enqueue a command at its absolute output frame.
+    ///
+    /// Commands must be submitted in nondecreasing frame order. This method
+    /// does not wait for the audio callback.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error containing the original command if its timestamp
+    /// precedes the last accepted timestamp or the queue is full.
+    pub fn try_schedule(
+        &mut self,
+        command: ScheduledNoteCommand,
+    ) -> Result<(), ScheduledNoteSendError> {
+        self.sender.try_send(command)
+    }
+
+    /// Returns the next absolute output frame reported by the audio callback.
+    ///
+    /// This value may advance concurrently while the stream is running.
+    #[must_use]
+    pub fn current_frame(&self) -> u64 {
+        self.current_frame.load(Ordering::Acquire)
     }
 }
 
