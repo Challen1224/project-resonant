@@ -27,6 +27,15 @@ pub enum NoteCommand {
         /// Waveform used by the voice oscillator.
         waveform: crate::oscillator::Waveform,
     },
+    /// Starts a preloaded one-shot sample.
+    SampleOn {
+        /// Identifier used to track this sample voice.
+        voice_id: u64,
+        /// Identifier of audio stored in the voice manager's sample bank.
+        sample_id: u32,
+        /// Linear playback gain in the range 0.0 to 1.0.
+        gain: f32,
+    },
     /// Begins the release stage for the voice identified by `voice_id`.
     NoteOff {
         /// Identifier of the voice to stop.

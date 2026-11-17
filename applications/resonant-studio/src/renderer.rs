@@ -23,9 +23,13 @@ pub(crate) struct Renderer {
     text_brush: TextBrush,
     selected_clip: f32,
     selected_browser_asset: f32,
+    preview_requested: bool,
     playhead_x: f32,
     is_playing: bool,
     last_playback_update: Instant,
+    audition_active: bool,
+    audition_phase: f32,
+    last_audition_update: Instant,
 }
 
 impl Renderer {
@@ -98,7 +102,7 @@ impl Renderer {
 
         let viewport_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Resonant Studio Viewport Interaction State"),
-            size: 24,
+            size: 32,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -184,9 +188,13 @@ impl Renderer {
             text_brush,
             selected_clip: -1.0,
             selected_browser_asset: -1.0,
+            preview_requested: false,
             playhead_x: 0.0,
             is_playing: false,
             last_playback_update: Instant::now(),
+            audition_active: false,
+            audition_phase: 0.0,
+            last_audition_update: Instant::now(),
         })
     }
 
@@ -206,6 +214,25 @@ impl Renderer {
             viewport_dimension(size.height),
             &self.queue,
         );
+    }
+
+    /// Takes a pending Browser instrument audition request.
+    pub(crate) fn take_preview_request(&mut self) -> Option<u32> {
+        if !self.preview_requested {
+            return None;
+        }
+
+        self.preview_requested = false;
+
+        match self.selected_browser_asset {
+            0.0 => Some(0),
+            1.0 => Some(1),
+            2.0 => Some(2),
+            3.0 => Some(3),
+            4.0 => Some(4),
+            5.0 => Some(5),
+            _ => None,
+        }
     }
 
     /// Updates the playhead and clip selection from a timeline click.
@@ -232,6 +259,14 @@ impl Renderer {
 
         // Browser asset selection.
         if x < 260.0 && y < mixer_top {
+            if self.selected_browser_asset >= 0.0
+                && (42.0..218.0).contains(&x)
+                && (634.0..666.0).contains(&y)
+            {
+                self.preview_requested = true;
+                return;
+            }
+
             self.selected_browser_asset = -1.0;
 
             if (12.0..248.0).contains(&x) {
@@ -302,6 +337,20 @@ impl Renderer {
         }
     }
 
+    /// Updates the Browser audition animation from the audio playback clock.
+    pub(crate) fn update_audition(&mut self, active: bool) {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_audition_update).as_secs_f32();
+
+        self.last_audition_update = now;
+
+        if active {
+            self.audition_phase = (self.audition_phase + elapsed * 9.0) % std::f32::consts::TAU;
+        }
+
+        self.audition_active = active;
+    }
+
     /// Returns whether the transport is currently playing.
     pub(crate) fn is_playing(&self) -> bool {
         self.is_playing
@@ -343,7 +392,7 @@ impl Renderer {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut viewport_bytes = [0_u8; 24];
+        let mut viewport_bytes = [0_u8; 32];
         viewport_bytes[0..4]
             .copy_from_slice(&viewport_dimension(self.configuration.width).to_ne_bytes());
         viewport_bytes[4..8]
@@ -353,6 +402,9 @@ impl Renderer {
         let playing = f32::from(self.is_playing);
         viewport_bytes[16..20].copy_from_slice(&playing.to_ne_bytes());
         viewport_bytes[20..24].copy_from_slice(&self.selected_browser_asset.to_ne_bytes());
+        let audition_active = f32::from(self.audition_active);
+        viewport_bytes[24..28].copy_from_slice(&audition_active.to_ne_bytes());
+        viewport_bytes[28..32].copy_from_slice(&self.audition_phase.to_ne_bytes());
 
         self.queue
             .write_buffer(&self.viewport_buffer, 0, &viewport_bytes);
@@ -450,41 +502,48 @@ fn build_text_sections(
     height: f32,
     selected_browser_asset: f32,
 ) -> [Section<'static>; 29] {
-    let (asset_name, asset_type, asset_description) = match selected_browser_asset {
+    let (asset_name, asset_type, asset_description, preview_label) = match selected_browser_asset {
         0.0 => (
             "Analog Synth",
             "INSTRUMENT / SYNTH",
             "A flexible synth for melodic sounds.",
+            "AUDITION",
         ),
         1.0 => (
             "Electric Piano",
             "INSTRUMENT / KEYS",
             "Warm electric piano tones.",
+            "AUDITION",
         ),
         2.0 => (
             "Sub Bass",
             "INSTRUMENT / BASS",
             "A deep low-frequency foundation.",
+            "AUDITION",
         ),
         3.0 => (
             "Drum Kit",
             "SAMPLE / DRUMS",
             "A collection of rhythmic drum sounds.",
+            "AUDITION",
         ),
         4.0 => (
             "Percussion",
             "SAMPLE / PERCUSSION",
             "Extra rhythmic accents and textures.",
+            "AUDITION",
         ),
         5.0 => (
             "Atmosphere",
             "SAMPLE / AMBIENCE",
             "Ambient textures for your tracks.",
+            "AUDITION",
         ),
         _ => (
             "No asset selected",
             "BROWSER LIBRARY",
             "Select an item above to view its details.",
+            "SELECT ASSET",
         ),
     };
 
@@ -584,7 +643,7 @@ fn build_text_sections(
             [0.76, 0.78, 0.86, 1.0],
         ),
         make_text_section(
-            "PREVIEW SOON",
+            preview_label,
             (77.0, 642.0),
             (120.0, 18.0),
             15.0,
@@ -698,6 +757,8 @@ struct Viewport {
     playhead_x: f32,
     is_playing: f32,
     selected_browser_asset: f32,
+    audition_active: f32,
+    audition_phase: f32,
 };
 
 @group(0) @binding(0)
@@ -863,9 +924,21 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
 
             if waveform_card <= 0.0 {
                 let wave_x = x - 24.0;
-                let phase = wave_x * 0.16;
-                let amplitude = 2.0
-                    + abs(sin(phase * 0.73) * cos(phase * 0.19)) * 9.0;
+                let phase_shift = select(
+                    0.0,
+                    viewport.audition_phase,
+                    viewport.audition_active > 0.5
+                );
+                let phase = wave_x * 0.16 + phase_shift;
+                var amplitude_scale = 1.0;
+                if viewport.audition_active > 0.5 {
+                    amplitude_scale =
+                        1.35 + 0.15 * sin(viewport.audition_phase * 2.0);
+                }
+                let amplitude = (
+                    2.0
+                    + abs(sin(phase * 0.73) * cos(phase * 0.19)) * 9.0
+                ) * amplitude_scale;
                 let bar_distance = abs(fract(wave_x / 5.0) - 0.5);
 
                 if bar_distance < 0.19 && abs(y - 600.0) < amplitude {
@@ -888,6 +961,16 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
             );
 
             if preview_button <= 0.0 {
+                if viewport.audition_active > 0.5 {
+                    let glow = 0.5
+                        + 0.5 * sin(viewport.audition_phase * 2.0);
+                    return vec4<f32>(
+                        0.45 + 0.10 * glow,
+                        0.32 + 0.12 * glow,
+                        0.92,
+                        1.0
+                    );
+                }
                 return vec4<f32>(0.36, 0.23, 0.78, 1.0);
             }
 

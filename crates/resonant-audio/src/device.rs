@@ -388,6 +388,13 @@ impl AudioCommandOutput {
                                     waveform,
                                 );
                             }
+                            NoteCommand::SampleOn {
+                                voice_id,
+                                sample_id,
+                                gain,
+                            } => {
+                                let _ = manager.sample_on(voice_id, sample_id, gain);
+                            }
                             NoteCommand::NoteOff { voice_id } => {
                                 let _ = manager.note_off(voice_id);
                             }
@@ -428,6 +435,7 @@ pub struct ScheduledAudioCommandOutput {
     _stream: Stream,
     sender: ScheduledNoteCommandSender,
     current_frame: Arc<AtomicU64>,
+    sample_rate_hz: u32,
 }
 
 impl ScheduledAudioCommandOutput {
@@ -462,6 +470,28 @@ impl ScheduledAudioCommandOutput {
         queue_capacity: usize,
         envelope_parameters: AdsrParameters,
     ) -> Result<Self, String> {
+        Self::start_with_envelope_and_samples(
+            max_voices,
+            queue_capacity,
+            envelope_parameters,
+            crate::sample::SampleBank::new(),
+        )
+    }
+
+    /// Opens the default output device with a preloaded sample bank.
+    ///
+    /// Sample data is moved into the voice manager before the audio callback
+    /// starts. Sample loading and allocation remain outside real-time playback.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same initialization errors as [`Self::start_with_envelope`].
+    pub fn start_with_envelope_and_samples(
+        max_voices: usize,
+        queue_capacity: usize,
+        envelope_parameters: AdsrParameters,
+        sample_bank: crate::sample::SampleBank,
+    ) -> Result<Self, String> {
         let (sender, receiver) =
             scheduled_note_command_channel(queue_capacity).map_err(str::to_string)?;
 
@@ -487,13 +517,19 @@ impl ScheduledAudioCommandOutput {
             return Err("The output device reported zero channels.".to_string());
         }
 
+        let output_sample_rate_hz = config.sample_rate;
+
         // Standard audio sample rates are exactly representable as f32.
         #[allow(clippy::cast_precision_loss)]
         let sample_rate_hz = config.sample_rate as f32;
 
-        let voice_manager =
-            AudioVoiceManager::new_with_envelope(max_voices, sample_rate_hz, envelope_parameters)
-                .ok_or_else(|| "Invalid audio voice manager configuration.".to_string())?;
+        let voice_manager = AudioVoiceManager::new_with_envelope_and_samples(
+            max_voices,
+            sample_rate_hz,
+            envelope_parameters,
+            sample_bank,
+        )
+        .ok_or_else(|| "Invalid audio voice manager configuration.".to_string())?;
 
         let mut renderer = ScheduledNoteRenderer::new(receiver, voice_manager, 0);
 
@@ -529,6 +565,7 @@ impl ScheduledAudioCommandOutput {
             _stream: stream,
             sender,
             current_frame,
+            sample_rate_hz: output_sample_rate_hz,
         })
     }
 
@@ -554,6 +591,12 @@ impl ScheduledAudioCommandOutput {
     #[must_use]
     pub fn current_frame(&self) -> u64 {
         self.current_frame.load(Ordering::Acquire)
+    }
+
+    /// Returns the configured output device sample rate in hertz.
+    #[must_use]
+    pub fn sample_rate_hz(&self) -> u32 {
+        self.sample_rate_hz
     }
 }
 

@@ -6,6 +6,7 @@ pub mod command;
 pub mod envelope;
 pub mod mixer;
 pub mod oscillator;
+pub mod sample;
 pub mod scheduler;
 pub mod voice;
 

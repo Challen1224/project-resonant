@@ -114,6 +114,13 @@ impl ScheduledNoteRenderer {
                     waveform,
                 );
             }
+            NoteCommand::SampleOn {
+                voice_id,
+                sample_id,
+                gain,
+            } => {
+                let _ = self.voice_manager.sample_on(voice_id, sample_id, gain);
+            }
             NoteCommand::NoteOff { voice_id } => {
                 let _ = self.voice_manager.note_off(voice_id);
             }
@@ -166,6 +173,41 @@ mod tests {
 
         assert!((renderer.next_sample() - 0.5).abs() < 0.0001);
         assert_eq!(renderer.next_frame(), 4);
+    }
+
+    #[test]
+    fn sample_starts_at_its_exact_scheduled_frame_and_finishes() {
+        let (mut sender, receiver) =
+            scheduled_note_command_channel(16).expect("valid queue capacity");
+
+        let mut manager =
+            AudioVoiceManager::new(4, 4.0).expect("valid voice manager configuration");
+        let sample_id = manager
+            .add_sample(4, vec![0.25, 0.5])
+            .expect("valid preloaded sample");
+
+        let mut renderer = ScheduledNoteRenderer::new(receiver, manager, 0);
+
+        let command = ScheduledNoteCommand {
+            frame: 1,
+            command: NoteCommand::SampleOn {
+                voice_id: 42,
+                sample_id,
+                gain: 1.0,
+            },
+        };
+
+        assert_eq!(sender.try_send(command), Ok(()));
+
+        assert_eq!(renderer.next_sample(), 0.0);
+        assert_eq!(renderer.voice_count(), 0);
+
+        assert!((renderer.next_sample() - 0.25).abs() < 0.0001);
+        assert_eq!(renderer.voice_count(), 1);
+
+        assert!((renderer.next_sample() - 0.5).abs() < 0.0001);
+        assert_eq!(renderer.next_sample(), 0.0);
+        assert_eq!(renderer.voice_count(), 0);
     }
 
     #[test]
